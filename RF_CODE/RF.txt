@@ -1,0 +1,170 @@
+int main(void) 
+  {
+	ret_code_t err_code;
+
+	struct Packet_Header hdr;
+	uint32_t nextBytes = 0;
+        uint8_t matchIndex = 0;
+        
+	gpio_init();
+        nrf_gpio_cfg_output(POW_CNTRL_PIN);
+        nrf_gpio_pin_set(POW_CNTRL_PIN);
+
+	err_code = NRF_LOG_INIT(NULL);  
+	APP_ERROR_CHECK(err_code);
+
+	NRF_LOG_DEFAULT_BACKENDS_INIT();
+        uart_init();
+
+	clocks_start();
+
+	err_code = esb_init();
+	APP_ERROR_CHECK(err_code);
+
+	NRF_LOG_DEBUG("DCU code started");
+        
+
+        err_code = nrf_esb_start_rx();
+        APP_ERROR_CHECK(err_code);
+
+        while( true ) 
+        {
+               NRF_LOG_FLUSH();
+
+              /* Find out the Next Packet type from Queues */
+              packet_type = NOT_DEFINED;
+
+              /* Ping and INstalation packetes are given High priority */
+              if ( ping_ins_buf_count > 0 )
+              {
+                  packet_type = ping_ins_queue[ping_ins_queue_tail].data[POS_PACKET_TYPE];
+              }
+              else if ( data_buf_count > 0 )
+              {
+                  packet_type = data_queue[data_queue_tail].data[POS_PACKET_TYPE];
+              }
+
+
+               switch ( packet_type )
+               {
+              
+                    NRF_LOG_FLUSH();
+
+                    case      PACKET_DATA : 
+                                            if ( data_buf_count != 0 )
+                                            {
+                                                  if ( data_queue[data_queue_tail].data[POS_DIRTY_FLAG] == TRUE )
+                                                  {
+                                                      updatepath();
+                                                      NRF_LOG_INFO("PATH UPDATED");
+                                                  }
+                                                  sendDataBidirectional( data_queue[data_queue_tail].data[POS_DIRECTION] );
+                                                  data_queue_pop();
+                                            }
+                    break;
+
+                    case      PACKET_PING : 
+                                            pingPacket();
+                                            ping_ins_queue_pop();
+                
+                    break;
+
+                    case      PACKET_INS  : 
+                                            storePath();
+                                            ping_ins_queue_pop(); 
+                                            insDone = 1;                                    
+                    break;
+
+                    case      PACKET_PUSH :
+                    case      PACKET_CMD_RESPONSE :
+                                            sendDataBidirectional( data_queue[data_queue_tail].data[POS_DIRECTION] );
+                                            data_queue_pop();
+                    break;
+
+               }
+           
+               if (DiagnosticTest == 1)
+               {
+                    pingNodes();
+                    DiagnosticTest = 0;
+               }                        
+            
+                //if ( path_Index != 0 && insDone  == 1 ) // need to start the sending req/data packet 
+                if ( Uart_rx_flag == 1 )  
+                {
+                      /*
+                       * This if PASS means something path is present at DCU 
+                       * Need to check the serial number coming from SERVER with DCU having serial no
+                       * If match is there means then the SERVER request is send through the PATH to that SERIAL number node
+                       * Then same in that path only RESPONSE will come  
+                       */
+                       nrf_delay_us(500000);
+                       NRF_LOG_DEBUG("--------------------------------------------------------------------------------------------------\n");
+                       NRF_LOG_INFO("uart_rx_index : %d",uart_rx_index );
+                       NRF_LOG_FLUSH();
+
+                       //if ( uart_out_data[0] == 0x5E && uart_out_data[1] == 0x5E )
+                       //{
+                       //     matchIndex = matchAddress( 0, uart_out_data[POS_UART_CMD_CIRCLENO], uart_out_data[POS_UART_CMD_ADDRESS] );
+                       //     if( matchIndex != 0xFF )
+                       //     {
+                       //           nrf_esb_stop_rx();
+                       //           fillHeader(PACKET_CMD, FORWARD, uart_rx_index, PATH_ARRAY[matchIndex].path, 0, 0);
+                       //           memcpy(tx_payload.data, &headeer, sizeof(headeer)); 
+
+                       //           memcpy(tx_payload.data + sizeof(headeer), uart_out_data, uart_rx_index);
+                       //           tx_payload.length = ( PACKET_HEADER_SIZE + uart_rx_index );
+                       //     }
+                       //}
+                      // else
+                       {
+
+                           //ExtractGatewayBytes( uart_out_data, uart_rx_index );
+                           matchIndex = matchSerialNo( 0, server_SerialNo );
+                           // matchIndex = matchSerialNo( 0, physicalAddr );
+
+                         // if ( uart_out_data[8] == 0xE6 ) remove_gateway_bytes( uart_out_data, &uart_rx_index );
+                          if( matchIndex != 0xFF )
+                          {
+                              /*
+                               * Actually this header filling data need to take from UART(GSM)
+                               */
+                              nrf_esb_stop_rx();
+
+    #define UART
+
+    #ifdef UART
+                          
+                              fillHeader(PACKET_DATA, FORWARD, uart_rx_index, PATH_ARRAY[matchIndex].path, 0, 0);
+                              memcpy(tx_payload.data, &headeer, sizeof(headeer)); 
+
+                              memcpy(tx_payload.data + sizeof(headeer), uart_out_data, uart_rx_index);
+                              tx_payload.length = ( PACKET_HEADER_SIZE + uart_rx_index );  
+
+    #else
+                              fillHeader(PACKET_DATA, FORWARD, sizeof(open_request1), PATH_ARRAY[matchIndex].path, 0, 0);
+                              memcpy(tx_payload.data, &headeer, sizeof(headeer)); 
+
+                              memcpy(tx_payload.data + sizeof(headeer), open_request1, sizeof(open_request1));
+                              tx_payload.length = ( PACKET_HEADER_SIZE + (open_request1[2] + 2));
+    #endif
+                          }
+                       } 
+                      
+                      uart_rx_index = 0;
+                      sendDataBidirectional( headeer.Direction );
+
+                      NRF_LOG_INFO("Command Sent to Meter");
+
+                      insDone = 0;
+                      Uart_rx_flag = 0; 
+                      memset( uart_out_data, 0, UART_RX_BUF_SIZE );         
+                }
+
+               
+            
+        }	
+}
+
+
+
